@@ -141,14 +141,19 @@ class AgentManager:
             agent_py = agent_dir / "agent.py"
             hc_url = agent_config.get("healthcheck_url")
 
+            # Source .env for API keys
+            env_source = ""
+            if (agent_dir / ".env").exists():
+                env_source = "set -a && . .env && set +a && "
+
             if hc_url:
                 cmd = (
-                    f"cd {agent_dir} && "
+                    f"cd {agent_dir} && {env_source}"
                     f"{python} {agent_py} && "
                     f"curl -fsS -m 10 --retry 5 {hc_url} > /dev/null 2>&1"
                 )
             else:
-                cmd = f"cd {agent_dir} && {python} {agent_py}"
+                cmd = f"cd {agent_dir} && {env_source}{python} {agent_py}"
 
             job = cron.new(command=cmd, comment=f"softcat:{name}")
             job.setall(schedule)

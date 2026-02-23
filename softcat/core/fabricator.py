@@ -32,6 +32,8 @@ The agent MUST:
 6. Ping a Healthchecks.io URL on success (if configured)
 7. Handle errors gracefully with logging
 8. Be idempotent — safe to run multiple times
+9. When substituting variables into the prompt template, use str.replace() NOT str.format() — the prompt may contain curly braces that are not Python format specifiers
+10. Read ANTHROPIC_API_KEY from os.environ (it will be set via .env file)
 
 Structure:
 ```python

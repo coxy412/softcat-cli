@@ -1,0 +1,29 @@
+# Example: arXiv AI Paper Monitor
+# Run: softcat spawn "monitor arXiv for new papers on AI agents, alert me to breakthroughs"
+
+name: arxiv-monitor
+summary: "Monitor arXiv for notable AI agent research papers"
+intent: monitor
+
+data_sources:
+  - type: rss
+    url_or_path: "https://rss.arxiv.org/rss/cs.AI"
+    description: "arXiv AI RSS feed"
+
+output:
+  format: markdown
+  destination: file
+  description: "Weekly roundup of notable AI agent papers with key takeaways"
+
+schedule:
+  cadence: weekly
+  cron_expression: "0 8 * * 1"
+  timezone: UTC
+
+model: claude-sonnet-4-5-20250929
+
+dependencies:
+  - feedparser
+  - httpx
+  - anthropic
+  - pyyaml

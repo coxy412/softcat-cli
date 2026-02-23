@@ -1,0 +1,39 @@
+# Example: SOFT CAT Site Content Bot
+# The agent that maintains softcat.ai — proof the framework works
+# Run: softcat spawn "scan AI news daily, generate a workshop log entry, commit to the site repo"
+
+name: site-content-bot
+summary: "Generates daily AI digest content for softcat.ai workshop log"
+intent: digest
+
+data_sources:
+  - type: rss
+    url_or_path: "https://news.ycombinator.com/rss"
+    description: "HackerNews RSS"
+  - type: rss
+    url_or_path: "https://rss.arxiv.org/rss/cs.AI"
+    description: "arXiv AI feed"
+  - type: api
+    url_or_path: "https://api.github.com"
+    description: "GitHub trending repos (AI-related)"
+
+output:
+  format: markdown
+  destination: git_commit
+  description: >
+    A markdown file with frontmatter for the static site generator.
+    Committed to the site repo, triggering auto-deploy.
+
+schedule:
+  cadence: daily
+  cron_expression: "0 5 * * *"
+  timezone: UTC
+
+model: claude-sonnet-4-5-20250929
+
+dependencies:
+  - feedparser
+  - httpx
+  - anthropic
+  - pyyaml
+  - gitpython

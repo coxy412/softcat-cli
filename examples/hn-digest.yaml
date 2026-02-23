@@ -1,0 +1,28 @@
+# Example: HackerNews AI Digest
+# Run: softcat spawn "watch HackerNews for AI news, summarise top 5 daily, save as markdown"
+
+name: hn-digest
+summary: "Daily digest of top AI-related stories from HackerNews"
+intent: digest
+
+data_sources:
+  - type: api
+    url_or_path: "https://hacker-news.firebaseio.com/v0/"
+    description: "HackerNews Firebase API"
+
+output:
+  format: markdown
+  destination: file
+  description: "A daily markdown file with summaries of the top 5 AI stories"
+
+schedule:
+  cadence: daily
+  cron_expression: "0 6 * * *"
+  timezone: UTC
+
+model: claude-sonnet-4-5-20250929
+
+dependencies:
+  - httpx
+  - anthropic
+  - pyyaml

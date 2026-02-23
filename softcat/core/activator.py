@@ -46,11 +46,19 @@ class Activator:
                 console.print(f"[bold red]   pip install failed: {result.stderr[:300]}[/bold red]")
                 raise RuntimeError(f"Dependency installation failed for {agent_name}")
 
-        # Step 2: Register cron job
+        # Step 2: Write .env file for cron environment
+        if deploy.env_vars:
+            env_file = agent_dir / ".env"
+            env_lines = [f'{k}="{v}"' for k, v in deploy.env_vars.items() if v]
+            env_file.write_text("\n".join(env_lines) + "\n")
+            env_file.chmod(0o600)
+            console.print("   → .env written")
+
+        # Step 3: Register cron job
         if deploy.schedule:
             self._register_cron(agent_name, agent_dir, deploy)
 
-        # Step 3: Record activation
+        # Step 4: Record activation
         status_file = agent_dir / ".status"
         status_file.write_text("active")
 
@@ -73,15 +81,19 @@ class Activator:
             python = sys.executable
             agent_py = agent_dir / "agent.py"
 
-            # Include healthcheck ping in the command if configured
+            # Source .env for API keys, then run agent
+            env_source = ""
+            if (agent_dir / ".env").exists():
+                env_source = "set -a && . .env && set +a && "
+
             if deploy.healthcheck_url:
                 cmd = (
-                    f"cd {agent_dir} && "
+                    f"cd {agent_dir} && {env_source}"
                     f"{python} {agent_py} && "
                     f"curl -fsS -m 10 --retry 5 {deploy.healthcheck_url} > /dev/null 2>&1"
                 )
             else:
-                cmd = f"cd {agent_dir} && {python} {agent_py}"
+                cmd = f"cd {agent_dir} && {env_source}{python} {agent_py}"
 
             job = cron.new(command=cmd, comment=f"softcat:{agent_name}")
             job.setall(deploy.schedule)

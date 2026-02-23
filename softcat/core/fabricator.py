@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,22 +19,30 @@ from softcat.core.scanner import ScanResult
 console = Console()
 
 FABRICATION_SYSTEM_PROMPT = """\
-You are the SOFT CAT Fabricator. You generate production-ready Python agent code.
+You are the SOFT CAT Fabricator. You generate a production-ready Python agent AND its
+prompt template together in a single response.
 
-Given the agent requirements and orchestration plan, generate a complete agent.py
-that can run standalone via `python agent.py`.
+Given the agent requirements and orchestration plan, generate TWO files:
 
-The agent MUST:
-1. Be a single self-contained Python file
-2. Use the Anthropic SDK to call Claude
-3. Read its config from a sibling config.yaml
-4. Read its prompt template from a sibling prompt.md
-5. Write outputs to a sibling outputs/ directory
-6. Ping a Healthchecks.io URL on success (if configured)
-7. Handle errors gracefully with logging
-8. Be idempotent — safe to run multiple times
-9. When substituting variables into the prompt template, use str.replace() NOT str.format() — the prompt may contain curly braces that are not Python format specifiers
-10. Read ANTHROPIC_API_KEY from os.environ (it will be set via .env file)
+1. agent.py — a complete standalone Python script
+2. prompt.md — the prompt template the agent sends to Claude at runtime
+
+CRITICAL: The placeholder names in prompt.md (e.g. {{DATE}}, {{STORIES}}) MUST exactly
+match the str.replace() calls in agent.py. Design the placeholders first, then write
+the agent code to substitute every one of them. Use UPPER_SNAKE_CASE for placeholder
+names wrapped in double curly braces: {{PLACEHOLDER_NAME}}.
+
+=== agent.py rules ===
+- Single self-contained Python file, runs via `python agent.py`
+- Use the Anthropic SDK to call Claude
+- Read its config from a sibling config.yaml
+- Read its prompt template from a sibling prompt.md
+- Write outputs to a sibling outputs/ directory
+- Ping a Healthchecks.io URL on success (if configured)
+- Handle errors gracefully with logging
+- Be idempotent — safe to run multiple times
+- Use str.replace() NOT str.format() for prompt substitution
+- Read ANTHROPIC_API_KEY from os.environ (it will be set via .env file)
 
 Structure:
 ```python
@@ -63,20 +72,19 @@ if __name__ == "__main__":
     main()
 ```
 
-Respond ONLY with the Python code. No markdown fences. No explanation.
-"""
+=== prompt.md rules ===
+- Clearly state the task
+- Define the expected output format
+- Include any constraints or rules
+- Use {{PLACEHOLDER_NAME}} for runtime data — every placeholder must be substituted by agent.py
 
-PROMPT_TEMPLATE_SYSTEM = """\
-You are the SOFT CAT Fabricator generating a prompt template for an AI agent.
+=== Response format ===
+Respond with EXACTLY this structure. No other text before or after.
 
-Given the agent requirements, write a clear prompt.md that the agent will send
-to Claude at runtime. The prompt should:
-1. Clearly state the task
-2. Define the expected output format
-3. Include any constraints or rules
-4. Be parameterised with {placeholders} for runtime data
-
-Respond ONLY with the markdown content. No code fences.
+===AGENT_CODE===
+<the complete Python code, no markdown fences>
+===PROMPT_TEMPLATE===
+<the complete prompt markdown, no markdown fences>
 """
 
 
@@ -113,13 +121,12 @@ class Fabricator:
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / "outputs").mkdir(exist_ok=True)
 
-        # Generate agent.py via Claude
-        agent_code = self._generate_agent_code(agent_name, scan, plan)
+        # Generate agent.py and prompt.md together in one Claude call
+        agent_code, prompt_template = self._generate_agent_and_prompt(
+            agent_name, scan, plan
+        )
         (agent_dir / "agent.py").write_text(agent_code)
         (agent_dir / "agent.py").chmod(0o755)
-
-        # Generate prompt.md via Claude
-        prompt_template = self._generate_prompt_template(scan, plan.model)
         (agent_dir / "prompt.md").write_text(prompt_template)
 
         # Generate config.yaml from structured data
@@ -152,10 +159,10 @@ class Fabricator:
 
         return agent_dir
 
-    def _generate_agent_code(
+    def _generate_agent_and_prompt(
         self, name: str, scan: ScanResult, plan: OrchestrationPlan
-    ) -> str:
-        """Use Claude to generate the agent Python code."""
+    ) -> tuple[str, str]:
+        """Use a single Claude call to generate both agent.py and prompt.md."""
         context = (
             f"Agent name: {name}\n"
             f"Summary: {scan.summary}\n"
@@ -163,6 +170,7 @@ class Fabricator:
             f"Data sources: {json.dumps([s.model_dump() for s in scan.data_sources])}\n"
             f"Output format: {scan.output.format}\n"
             f"Output destination: {scan.output.destination}\n"
+            f"Output description: {scan.output.description}\n"
             f"Model to use at runtime: {plan.model}\n"
             f"Dependencies available: {', '.join(plan.pip_dependencies)}\n"
             f"MCP servers: {json.dumps(plan.mcp_servers)}\n"
@@ -170,30 +178,53 @@ class Fabricator:
 
         response = self.client.messages.create(
             model=plan.model,
-            max_tokens=4000,
+            max_tokens=6000,
             system=FABRICATION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": context}],
         )
 
-        return self._strip_fences(response.content[0].text.strip())
+        raw = response.content[0].text.strip()
+        agent_code, prompt_template = self._parse_fabrication_response(raw)
+        self._validate_placeholders(agent_code, prompt_template)
+        return agent_code, prompt_template
 
-    def _generate_prompt_template(self, scan: ScanResult, model: str | None = None) -> str:
-        """Use Claude to generate the runtime prompt template."""
-        context = (
-            f"Agent summary: {scan.summary}\n"
-            f"Intent: {scan.intent}\n"
-            f"Output format: {scan.output.format}\n"
-            f"Output description: {scan.output.description}\n"
-        )
+    def _parse_fabrication_response(self, raw: str) -> tuple[str, str]:
+        """Split the unified response into agent code and prompt template."""
+        code_marker = "===AGENT_CODE==="
+        prompt_marker = "===PROMPT_TEMPLATE==="
 
-        response = self.client.messages.create(
-            model=model or self.config.default_model,
-            max_tokens=2000,
-            system=PROMPT_TEMPLATE_SYSTEM,
-            messages=[{"role": "user", "content": context}],
-        )
+        if code_marker not in raw or prompt_marker not in raw:
+            console.print(
+                "[yellow]⚠ Response missing delimiters, attempting fallback parse[/yellow]"
+            )
+            # Fallback: assume everything before ===PROMPT_TEMPLATE=== is code
+            # or if no markers at all, treat as code-only (prompt will be empty)
+            if prompt_marker in raw:
+                parts = raw.split(prompt_marker, 1)
+                return self._strip_fences(parts[0].strip()), parts[1].strip()
+            return self._strip_fences(raw), ""
 
-        return self._strip_fences(response.content[0].text.strip())
+        # Split on markers
+        after_code = raw.split(code_marker, 1)[1]
+        parts = after_code.split(prompt_marker, 1)
+
+        agent_code = self._strip_fences(parts[0].strip())
+        prompt_template = parts[1].strip() if len(parts) > 1 else ""
+
+        return agent_code, prompt_template
+
+    def _validate_placeholders(self, agent_code: str, prompt_template: str) -> None:
+        """Check that all prompt placeholders appear in the agent code."""
+        placeholders = set(re.findall(r"\{\{([A-Z_]+)\}\}", prompt_template))
+        if not placeholders:
+            return
+
+        missing = [p for p in placeholders if f"{{{{{p}}}}}" not in agent_code]
+        if missing:
+            console.print(
+                f"[yellow]⚠ Prompt placeholders not found in agent code: "
+                f"{', '.join('{{' + p + '}}' for p in missing)}[/yellow]"
+            )
 
     @staticmethod
     def _strip_fences(text: str) -> str:

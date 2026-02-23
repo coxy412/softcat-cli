@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from rich.console import Console
 
 from softcat.config import Config
@@ -79,6 +79,19 @@ class ScheduleSpec(BaseModel):
     cadence: str = "daily"
     cron_expression: str = "0 6 * * *"
     timezone: str = "UTC"
+
+    @field_validator("cron_expression", "cadence", "timezone", mode="before")
+    @classmethod
+    def coerce_none_to_default(cls, v: str | None, info) -> str:
+        """Claude sometimes returns null for optional-feeling fields."""
+        if v is None:
+            defaults = {
+                "cadence": "daily",
+                "cron_expression": "0 6 * * *",
+                "timezone": "UTC",
+            }
+            return defaults[info.field_name]
+        return v
 
 
 class ScanResult(BaseModel):

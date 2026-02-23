@@ -85,10 +85,16 @@ class Tracker:
                 if hc_status:
                     health.last_ping = hc_status.get("last_ping")
                     hc_state = hc_status.get("status", "unknown")
-                    if hc_state == "down":
-                        health.status = "error"
-                    elif hc_state == "grace":
-                        health.status = "grace"
+                    status_map = {
+                        "up": "active",
+                        "down": "error",
+                        "grace": "grace",
+                        "paused": "paused",
+                        "new": "active",
+                        "started": "active",
+                    }
+                    if hc_state in status_map:
+                        health.status = status_map[hc_state]
 
         return health
 

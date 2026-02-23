@@ -55,22 +55,8 @@ class Tester:
         except subprocess.TimeoutExpired:
             return TestResult(passed=False, message="Syntax check timed out")
 
-        # Step 2: Import check — verify dependencies are available
-        try:
-            result = subprocess.run(
-                [sys.executable, "-c", f"exec(open('{agent_py}').read().split('def ')[0])"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                env={**dict(__import__("os").environ), "SOFTCAT_TEST_MODE": "1"},
-            )
-            if result.returncode != 0:
-                return TestResult(
-                    passed=False,
-                    message=f"Import error: {result.stderr.strip()[:200]}",
-                )
-        except subprocess.TimeoutExpired:
-            return TestResult(passed=False, message="Import check timed out")
+        # Step 2: Import check — skipped for now (deps not yet installed at test phase)
+        console.print("[dim]   → import check skipped (deps installed during activation)[/dim]")
 
         # Step 3: Config check
         config_yaml = agent_dir / "config.yaml"

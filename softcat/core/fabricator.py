@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -116,7 +117,7 @@ class Fabricator:
         (agent_dir / "agent.py").chmod(0o755)
 
         # Generate prompt.md via Claude
-        prompt_template = self._generate_prompt_template(scan)
+        prompt_template = self._generate_prompt_template(scan, plan.model)
         (agent_dir / "prompt.md").write_text(prompt_template)
 
         # Generate config.yaml from structured data
@@ -132,13 +133,8 @@ class Fabricator:
             "data_sources": [s.model_dump() for s in scan.data_sources],
             "dependencies": plan.pip_dependencies,
             "healthcheck_url": None,  # Set during Configure phase
-            "created_at": datetime.now(timezone.utc).isoformat() if True else "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
-
-        # Need datetime import at module level for the above
-        from datetime import datetime, timezone as tz
-
-        config_data["created_at"] = datetime.now(tz.utc).isoformat()
 
         with open(agent_dir / "config.yaml", "w") as f:
             yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
@@ -171,15 +167,15 @@ class Fabricator:
         )
 
         response = self.client.messages.create(
-            model=self.config.default_model,
+            model=plan.model,
             max_tokens=4000,
             system=FABRICATION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": context}],
         )
 
-        return response.content[0].text.strip()
+        return self._strip_fences(response.content[0].text.strip())
 
-    def _generate_prompt_template(self, scan: ScanResult) -> str:
+    def _generate_prompt_template(self, scan: ScanResult, model: str | None = None) -> str:
         """Use Claude to generate the runtime prompt template."""
         context = (
             f"Agent summary: {scan.summary}\n"
@@ -189,10 +185,20 @@ class Fabricator:
         )
 
         response = self.client.messages.create(
-            model=self.config.default_model,
+            model=model or self.config.default_model,
             max_tokens=2000,
             system=PROMPT_TEMPLATE_SYSTEM,
             messages=[{"role": "user", "content": context}],
         )
 
-        return response.content[0].text.strip()
+        return self._strip_fences(response.content[0].text.strip())
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        """Strip markdown code fences from Claude's response."""
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+        return text

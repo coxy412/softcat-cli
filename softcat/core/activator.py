@@ -40,9 +40,11 @@ class Activator:
                 [sys.executable, "-m", "pip", "install", "-q", "-r", str(requirements)],
                 capture_output=True,
                 text=True,
+                timeout=120,
             )
             if result.returncode != 0:
-                console.print(f"[red]   ⚠ pip install failed: {result.stderr[:200]}[/red]")
+                console.print(f"[bold red]   pip install failed: {result.stderr[:300]}[/bold red]")
+                raise RuntimeError(f"Dependency installation failed for {agent_name}")
 
         # Step 2: Register cron job
         if deploy.schedule:

@@ -310,25 +310,50 @@ def hiss(agent_name: str) -> None:
 
 
 @cli.command()
-def groom() -> None:
-    """Update all agents to the latest framework version."""
+@click.argument("agent_name", required=False, default=None)
+@click.option("--prompt", is_flag=True, help="Also regenerate the prompt template")
+def groom(agent_name: str | None, prompt: bool) -> None:
+    """Regenerate agent code using the latest framework conventions.
+
+    Refreshes agent.py while preserving config, prompt, env, and outputs.
+    Use --prompt to also regenerate prompt.md.
+
+    \b
+    Examples:
+        softcat groom hackernews-ai-agent-digest
+        softcat groom hackernews-ai-agent-digest --prompt
+        softcat groom              # groom all agents
+    """
     config = get_config()
     manager = AgentManager(config)
-    agents = manager.list_agents()
 
-    if not agents:
+    if agent_name:
+        agents_to_groom = [manager.get_agent(agent_name)]
+        if agents_to_groom[0] is None:
+            console.print(f"[red]🙀 No agent named '{agent_name}'[/red]")
+            raise SystemExit(1)
+    else:
+        agents_to_groom = manager.list_agents()
+
+    if not agents_to_groom:
         console.print("[dim]No agents to groom.[/dim]")
         return
 
-    console.print("[bold]🐱 Grooming all agents...[/bold]\n")
+    mode = "code + prompt" if prompt else "code only"
+    console.print(f"[bold]🐱 Grooming ({mode})...[/bold]\n")
 
-    for agent in agents:
+    for agent in agents_to_groom:
         console.print(f"  Grooming {agent.name}...", end=" ")
-        success = manager.update_agent(agent.name)
+        try:
+            success = manager.update_agent(agent.name, regenerate_prompt=prompt)
+        except Exception as exc:
+            console.print(f"[red]✗ {exc}[/red]")
+            continue
+
         if success:
-            console.print("[green]✓[/green]")
+            console.print("[green]✓ fur looking fresh[/green]")
         else:
-            console.print("[red]✗[/red]")
+            console.print("[red]✗ hairball — restored previous version[/red]")
 
     console.print("\n[bold green]Grooming complete 🐱[/bold green]")
 

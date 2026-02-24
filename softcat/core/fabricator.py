@@ -96,6 +96,86 @@ Respond with EXACTLY this structure. No other text before or after.
 """
 
 
+REFABRICATION_SYSTEM_PROMPT = """\
+You are the SOFT CAT Fabricator performing a code refresh. You are given an existing agent's
+prompt template (prompt.md) and configuration, and you must generate a new agent.py that is
+fully compatible with that prompt.
+
+{mode_instruction}
+
+=== agent.py rules ===
+- Single self-contained Python file, runs via `python agent.py`
+- Use the Anthropic SDK to call Claude
+- Read its config from a sibling config.yaml
+- Read its prompt template from a sibling prompt.md
+- Write outputs to a sibling outputs/ directory
+- Ping a Healthchecks.io URL on success (if configured)
+- Handle errors gracefully with logging
+- Be idempotent — safe to run multiple times
+- Use str.replace() NOT str.format() for prompt substitution
+- Read ANTHROPIC_API_KEY from os.environ (it will be set via .env file)
+- Check os.environ.get("SOFTCAT_DRY_RUN") — when set to "1", use hardcoded sample data \
+instead of making real API calls. This enables safe testing without external dependencies.
+- Check os.environ.get("SOFTCAT_MANUAL_TRIGGER") — when set to "1", skip the healthcheck \
+ping at the end (manual runs should not count as scheduled health signals).
+- CRITICAL: Every {{PLACEHOLDER}} in the prompt template MUST have a corresponding \
+str.replace() call in agent.py. Check them carefully.
+
+Structure:
+```python
+#!/usr/bin/env python3
+\"\"\"SOFT CAT Agent: {{name}} — {{summary}}\"\"\"
+
+import os
+import sys
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+import anthropic
+import httpx
+import yaml
+
+# ... agent logic ...
+
+def main():
+    dry_run = os.environ.get("SOFTCAT_DRY_RUN") == "1"
+    manual = os.environ.get("SOFTCAT_MANUAL_TRIGGER") == "1"
+
+    # Load config
+    # If dry_run: use sample data instead of real API calls
+    # Execute agent logic
+    # Write output
+    # If not manual: ping healthcheck
+
+if __name__ == "__main__":
+    main()
+```
+
+=== prompt.md rules ===
+- Clearly state the task
+- Define the expected output format
+- Include any constraints or rules
+- Use {{PLACEHOLDER_NAME}} for runtime data — every placeholder must be substituted by agent.py
+"""
+
+_REFAB_CODE_ONLY_INSTRUCTION = """\
+Generate ONLY agent.py. The existing prompt.md is provided and must NOT be changed.
+Your response should contain ONLY the Python code — no markdown fences, no delimiters."""
+
+_REFAB_FULL_INSTRUCTION = """\
+Generate both a new agent.py AND a new prompt.md. Improve both while keeping the same purpose.
+
+=== Response format ===
+Respond with EXACTLY this structure. No other text before or after.
+
+===AGENT_CODE===
+<the complete Python code, no markdown fences>
+===PROMPT_TEMPLATE===
+<the complete prompt markdown, no markdown fences>"""
+
+
 class Fabricator:
     """F — Fabricate phase of the S.O.F.T.C.A.T pipeline.
 
@@ -233,6 +313,77 @@ class Fabricator:
                 f"[yellow]⚠ Prompt placeholders not found in agent code: "
                 f"{', '.join('{{' + p + '}}' for p in missing)}[/yellow]"
             )
+
+    def refabricate(
+        self,
+        agent_dir: Path,
+        regenerate_prompt: bool = False,
+    ) -> Path:
+        """Regenerate agent.py (and optionally prompt.md) for an existing agent."""
+        config_file = agent_dir / "config.yaml"
+        prompt_file = agent_dir / "prompt.md"
+        agent_file = agent_dir / "agent.py"
+
+        with open(config_file) as f:
+            agent_config = yaml.safe_load(f) or {}
+
+        existing_prompt = prompt_file.read_text()
+
+        # Back up files before overwriting
+        if agent_file.exists():
+            (agent_dir / "agent.py.bak").write_text(agent_file.read_text())
+        if regenerate_prompt and prompt_file.exists():
+            (agent_dir / "prompt.md.bak").write_text(existing_prompt)
+
+        # Build context from config
+        data_sources = agent_config.get("data_sources", [])
+        deps = agent_config.get("dependencies", [])
+        context = (
+            f"Agent name: {agent_config.get('name', agent_dir.name)}\n"
+            f"Summary: {agent_config.get('summary', '')}\n"
+            f"Intent: {agent_config.get('intent', '')}\n"
+            f"Data sources: {json.dumps(data_sources)}\n"
+            f"Output format: {agent_config.get('output_format', 'markdown')}\n"
+            f"Output destination: {agent_config.get('output_destination', 'file')}\n"
+            f"Model to use at runtime: {agent_config.get('model', 'claude-sonnet-4-5-20250929')}\n"
+            f"Dependencies available: {', '.join(deps)}\n"
+            f"\n--- Existing prompt.md ---\n{existing_prompt}\n"
+        )
+
+        # Select mode instruction
+        if regenerate_prompt:
+            mode_instruction = _REFAB_FULL_INSTRUCTION
+        else:
+            mode_instruction = _REFAB_CODE_ONLY_INSTRUCTION
+
+        system_prompt = REFABRICATION_SYSTEM_PROMPT.format(
+            mode_instruction=mode_instruction
+        )
+
+        model = agent_config.get("model", "claude-sonnet-4-5-20250929")
+        response = self.client.messages.create(
+            model=model,
+            max_tokens=6000,
+            system=system_prompt,
+            messages=[{"role": "user", "content": context}],
+        )
+
+        raw = response.content[0].text.strip()
+
+        if regenerate_prompt:
+            agent_code, prompt_template = self._parse_fabrication_response(raw)
+            self._validate_placeholders(agent_code, prompt_template)
+            prompt_file.write_text(prompt_template)
+            console.print(f"   → {prompt_file}")
+        else:
+            agent_code = self._strip_fences(raw)
+            self._validate_placeholders(agent_code, existing_prompt)
+
+        agent_file.write_text(agent_code)
+        agent_file.chmod(0o755)
+        console.print(f"   → {agent_file}")
+
+        return agent_dir
 
     @staticmethod
     def _strip_fences(text: str) -> str:

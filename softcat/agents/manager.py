@@ -185,11 +185,47 @@ class AgentManager:
         shutil.rmtree(agent_dir)
         return True
 
-    def update_agent(self, name: str) -> bool:
-        """Update an agent to the latest framework version."""
-        # TODO: Implement agent update logic
-        # This would re-fabricate the agent wrapper while preserving
-        # the prompt template and config
+    def update_agent(self, name: str, regenerate_prompt: bool = False) -> bool:
+        """Re-fabricate an agent's code while preserving config and outputs.
+
+        Backs up agent.py (and prompt.md if regenerate_prompt) before calling
+        Claude to regenerate. Restores from backup if syntax check fails.
+        """
+        from softcat.core.fabricator import Fabricator
+        from softcat.core.tester import Tester
+
+        agent_dir = self.agents_dir / name
+        if not agent_dir.exists():
+            return False
+
+        # Fabricator creates .bak files and writes new code
+        fabricator = Fabricator(self.config)
+        fabricator.refabricate(agent_dir, regenerate_prompt=regenerate_prompt)
+
+        # Syntax check the new code
+        tester = Tester(self.config)
+        result = tester.test(agent_dir)
+
+        if not result.passed:
+            # Restore from backup
+            bak = agent_dir / "agent.py.bak"
+            if bak.exists():
+                (agent_dir / "agent.py").write_text(bak.read_text())
+                (agent_dir / "agent.py").chmod(0o755)
+                bak.unlink()
+            if regenerate_prompt:
+                prompt_bak = agent_dir / "prompt.md.bak"
+                if prompt_bak.exists():
+                    (agent_dir / "prompt.md").write_text(prompt_bak.read_text())
+                    prompt_bak.unlink()
+            return False
+
+        # Clean up backups on success
+        for bak_name in ("agent.py.bak", "prompt.md.bak"):
+            bak = agent_dir / bak_name
+            if bak.exists():
+                bak.unlink()
+
         return True
 
     def _load_agent_info(self, agent_dir: Path) -> AgentInfo:

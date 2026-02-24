@@ -33,25 +33,15 @@ def cli(ctx: click.Context) -> None:
     ctx.obj["manager"] = AgentManager(ctx.obj["config"])
 
 
-@cli.command()
-@click.argument("description")
-@click.option("--name", "-n", default=None, help="Agent name (auto-generated if not set)")
-@click.option("--model", "-m", default="claude-sonnet-4-5-20250929", help="Claude model to use")
-@click.option("--dry-run", is_flag=True, help="Generate but don't deploy")
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed pipeline output")
-def spawn(description: str, name: str | None, model: str, dry_run: bool, verbose: bool) -> None:
-    """Create a new agent from a natural language description.
-
-    The full S.O.F.T.C.A.T pipeline runs:
-    Scan → Orchestrate → Fabricate → Test → Configure → Activate → Track
-
-    Example:
-        softcat spawn "watch HackerNews for AI news, summarise top 5 daily"
-    """
-    console.print(BANNER)
-    console.print(f"[dim]Spawning agent from description...[/dim]\n")
-
-    from softcat.core.scanner import Scanner
+def _run_pipeline(
+    config: "Config",
+    agent_name: str,
+    scan_result: "ScanResult",
+    model: str = "claude-sonnet-4-5-20250929",
+    dry_run: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Run the O→F→T→C→A→T pipeline after scanning/designing is complete."""
     from softcat.core.orchestrator import Orchestrator
     from softcat.core.fabricator import Fabricator
     from softcat.core.tester import Tester
@@ -59,17 +49,8 @@ def spawn(description: str, name: str | None, model: str, dry_run: bool, verbose
     from softcat.core.activator import Activator
     from softcat.core.tracker import Tracker
 
-    config = get_config()
-
-    # S — Scan
-    console.print("[bold yellow]🐱 Scanning requirements...[/bold yellow]")
-    scanner = Scanner(config, model=model)
-    scan_result = scanner.scan(description)
-
     if verbose:
         console.print(Panel(str(scan_result), title="Scan Result"))
-
-    agent_name = name or scan_result.suggested_name
 
     # O — Orchestrate
     console.print("[bold yellow]🐱 Orchestrating...[/bold yellow]")
@@ -133,6 +114,38 @@ def spawn(description: str, name: str | None, model: str, dry_run: bool, verbose
     tracker.register(agent_name, deploy_config)
 
     console.print(f"\n[bold green]Agent spawned: {agent_name} 🐱[/bold green]")
+
+
+@cli.command()
+@click.argument("description")
+@click.option("--name", "-n", default=None, help="Agent name (auto-generated if not set)")
+@click.option("--model", "-m", default="claude-sonnet-4-5-20250929", help="Claude model to use")
+@click.option("--dry-run", is_flag=True, help="Generate but don't deploy")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed pipeline output")
+def spawn(description: str, name: str | None, model: str, dry_run: bool, verbose: bool) -> None:
+    """Create a new agent from a natural language description.
+
+    The full S.O.F.T.C.A.T pipeline runs:
+    Scan → Orchestrate → Fabricate → Test → Configure → Activate → Track
+
+    Example:
+        softcat spawn "watch HackerNews for AI news, summarise top 5 daily"
+    """
+    from softcat.core.scanner import Scanner
+
+    console.print(BANNER)
+    console.print(f"[dim]Spawning agent from description...[/dim]\n")
+
+    config = get_config()
+
+    # S — Scan
+    console.print("[bold yellow]🐱 Scanning requirements...[/bold yellow]")
+    scanner = Scanner(config, model=model)
+    scan_result = scanner.scan(description)
+
+    agent_name = name or scan_result.suggested_name
+
+    _run_pipeline(config, agent_name, scan_result, model=model, dry_run=dry_run, verbose=verbose)
 
 
 @cli.command()
@@ -368,20 +381,70 @@ def adopt(template_name: str) -> None:
 
 
 @cli.command()
-def meow() -> None:
+@click.option("--name", "-n", default=None, help="Override agent name")
+@click.option("--model", "-m", default=None, help="Claude model for conversation")
+@click.option("--design-only", is_flag=True, help="Design without spawning")
+def meow(name: str | None, model: str | None, design_only: bool) -> None:
     """Interactive chat mode for designing complex agents.
 
     Talk to the cat. It'll ask questions, refine your requirements,
-    and spawn the perfect agent.
+    and spawn the perfect agent. Type 'quit' or 'exit' to leave.
+
+    \b
+    Examples:
+        softcat meow
+        softcat meow --design-only
+        softcat meow --name my-agent
     """
+    from softcat.core.designer import Designer
+
     console.print(BANNER)
-    console.print("[bold]Entering interactive mode. Type 'quit' to exit.[/bold]\n")
+    console.print("[bold]Interactive agent designer. Type 'quit' to exit.[/bold]\n")
     console.print("[cyan]🐱 What would you like me to build?[/cyan]\n")
 
-    # TODO: Implement interactive multi-turn agent design
-    # This will use Claude in a conversational loop to refine
-    # requirements before running the spawn pipeline
-    console.print("[dim]Interactive mode coming soon. Use 'softcat spawn' for now.[/dim]")
+    config = get_config()
+    designer = Designer(config, model=model)
+
+    try:
+        scan_result = designer.design()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted. No agent created.[/dim]")
+        return
+
+    if scan_result is None:
+        return
+
+    # Show summary
+    agent_name = name or scan_result.suggested_name
+    sources = ", ".join(s.description or s.url_or_path or s.type for s in scan_result.data_sources) or "none"
+
+    console.print(Panel(
+        f"[bold]{agent_name}[/bold]\n\n"
+        f"{scan_result.summary}\n\n"
+        f"Schedule:  {scan_result.schedule.cron_expression}\n"
+        f"Output:    {scan_result.output.format} → {scan_result.output.destination}\n"
+        f"Sources:   {sources}\n"
+        f"Intent:    {scan_result.intent}\n"
+        f"Complexity: {scan_result.complexity}",
+        title="🐱 Agent Design",
+    ))
+
+    if design_only:
+        console.print("[dim]Design complete (--design-only). Use 'softcat spawn' to build.[/dim]")
+        return
+
+    # Confirm before spawning
+    if not click.confirm("Spawn this agent?"):
+        console.print("[dim]No agent created.[/dim]")
+        return
+
+    console.print()
+    _run_pipeline(
+        config,
+        agent_name,
+        scan_result,
+        model=model or config.default_model,
+    )
 
 
 @cli.command()

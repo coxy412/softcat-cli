@@ -9,6 +9,7 @@ from pathlib import Path
 from crontab import CronTab
 from rich.console import Console
 
+from softcat.agents.runtime import cron_python_ref
 from softcat.config import Config
 from softcat.core.configurator import DeployConfig
 
@@ -32,12 +33,16 @@ class Activator:
     ) -> bool:
         """Deploy an agent: install deps, set up cron, first run."""
 
-        # Step 1: Install dependencies
+        # Step 1: Create per-agent virtual environment
+        self._create_venv(agent_dir)
+
+        # Step 2: Install dependencies into the venv
         requirements = agent_dir / "requirements.txt"
         if requirements.exists():
             console.print("   → installing dependencies...")
+            pip_cmd = self._pip_cmd(agent_dir, requirements)
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q", "-r", str(requirements)],
+                pip_cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -46,7 +51,7 @@ class Activator:
                 console.print(f"[bold red]   pip install failed: {result.stderr[:300]}[/bold red]")
                 raise RuntimeError(f"Dependency installation failed for {agent_name}")
 
-        # Step 2: Write .env file for cron environment
+        # Step 3: Write .env file for cron environment
         if deploy.env_vars:
             env_file = agent_dir / ".env"
             env_lines = [f'{k}="{v}"' for k, v in deploy.env_vars.items() if v]
@@ -54,11 +59,11 @@ class Activator:
             env_file.chmod(0o600)
             console.print("   → .env written")
 
-        # Step 3: Register cron job
+        # Step 4: Register cron job
         if deploy.schedule:
             self._register_cron(agent_name, agent_dir, deploy)
 
-        # Step 4: Record activation
+        # Step 5: Record activation
         status_file = agent_dir / ".status"
         status_file.write_text("active")
 
@@ -77,8 +82,8 @@ class Activator:
             # Remove existing job for this agent
             cron.remove_all(comment=f"softcat:{agent_name}")
 
-            # Build the command
-            python = sys.executable
+            # Build the command — use venv python if available
+            python = cron_python_ref(agent_dir)
             agent_py = agent_dir / "agent.py"
 
             # Source .env for API keys, then run agent
@@ -105,6 +110,34 @@ class Activator:
         except Exception as e:
             console.print(f"[yellow]   ⚠ Cron setup failed: {e}[/yellow]")
             console.print("[dim]   You may need to set up scheduling manually.[/dim]")
+
+    def _create_venv(self, agent_dir: Path) -> None:
+        """Create a per-agent virtual environment."""
+        venv_dir = agent_dir / ".venv"
+        if venv_dir.exists():
+            console.print("   → venv already exists, skipping creation")
+            return
+
+        console.print("   → creating virtual environment...")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "venv", str(venv_dir)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0:
+                console.print(f"[yellow]   ⚠ venv creation failed: {result.stderr[:200]}[/yellow]")
+                console.print("[dim]   falling back to system python[/dim]")
+        except subprocess.TimeoutExpired:
+            console.print("[yellow]   ⚠ venv creation timed out, falling back to system python[/yellow]")
+
+    def _pip_cmd(self, agent_dir: Path, requirements: Path) -> list[str]:
+        """Return the pip install command for this agent."""
+        venv_pip = agent_dir / ".venv" / "bin" / "pip"
+        if venv_pip.exists():
+            return [str(venv_pip), "install", "-q", "-r", str(requirements)]
+        return [sys.executable, "-m", "pip", "install", "-q", "-r", str(requirements)]
 
     def deactivate(self, agent_name: str) -> bool:
         """Remove an agent's cron job."""

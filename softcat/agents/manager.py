@@ -130,14 +130,14 @@ class AgentManager:
 
         # Re-register cron
         try:
-            import sys
-
             from crontab import CronTab
+
+            from softcat.agents.runtime import cron_python_ref
 
             cron = CronTab(user=True)
             cron.remove_all(comment=f"softcat:{name}")
 
-            python = sys.executable
+            python = cron_python_ref(agent_dir)
             agent_py = agent_dir / "agent.py"
             hc_url = agent_config.get("healthcheck_url")
 

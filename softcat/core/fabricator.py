@@ -43,6 +43,10 @@ names wrapped in double curly braces: {{PLACEHOLDER_NAME}}.
 - Be idempotent — safe to run multiple times
 - Use str.replace() NOT str.format() for prompt substitution
 - Read ANTHROPIC_API_KEY from os.environ (it will be set via .env file)
+- Check os.environ.get("SOFTCAT_DRY_RUN") — when set to "1", use hardcoded sample data \
+instead of making real API calls. This enables safe testing without external dependencies.
+- Check os.environ.get("SOFTCAT_MANUAL_TRIGGER") — when set to "1", skip the healthcheck \
+ping at the end (manual runs should not count as scheduled health signals).
 
 Structure:
 ```python
@@ -63,10 +67,14 @@ import yaml
 # ... agent logic ...
 
 def main():
+    dry_run = os.environ.get("SOFTCAT_DRY_RUN") == "1"
+    manual = os.environ.get("SOFTCAT_MANUAL_TRIGGER") == "1"
+
     # Load config
+    # If dry_run: use sample data instead of real API calls
     # Execute agent logic
     # Write output
-    # Ping healthcheck
+    # If not manual: ping healthcheck
 
 if __name__ == "__main__":
     main()

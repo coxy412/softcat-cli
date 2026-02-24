@@ -114,6 +114,19 @@ def spawn(description: str, name: str | None, model: str, dry_run: bool, verbose
     activator.activate(agent_name, agent_dir, deploy_config)
     console.print("   → [green]live ✓[/green]")
 
+    # Post-activation runtime test
+    console.print("[bold yellow]🐱 Verifying agent runs correctly...[/bold yellow]")
+    runtime_result = tester.test_runtime(agent_dir)
+
+    if runtime_result.warnings:
+        for w in runtime_result.warnings:
+            console.print(f"   [yellow]⚠ {w}[/yellow]")
+
+    if runtime_result.passed:
+        console.print("   → [green]runtime check passed ✓[/green]")
+    else:
+        console.print("   → [yellow]runtime check had issues (agent deployed anyway)[/yellow]")
+
     # T — Track
     console.print("[bold yellow]🐱 Tracking enabled[/bold yellow]")
     tracker = Tracker(config)
@@ -226,6 +239,60 @@ def wake(agent_name: str) -> None:
         console.print(f"[green]🐱 {agent_name} is awake and purring[/green]")
     else:
         console.print(f"[red]🙀 Couldn't wake '{agent_name}'[/red]")
+
+
+@cli.command()
+@click.argument("agent_name")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+def trigger(agent_name: str, verbose: bool) -> None:
+    """Poke an agent to run right now. No waiting for cron.
+
+    Runs the agent immediately, streaming output to the terminal.
+    Does NOT signal the healthcheck endpoint (that's for scheduled runs).
+    Works even if the agent is napping.
+
+    Example:
+        softcat trigger hackernews-ai-agent-digest
+    """
+    import subprocess
+
+    from softcat.agents.runtime import build_env, resolve_python
+
+    config = get_config()
+    manager = AgentManager(config)
+    agent = manager.get_agent(agent_name)
+
+    if not agent:
+        console.print(f"[red]🙀 No agent named '{agent_name}'[/red]")
+        raise SystemExit(1)
+
+    agent_dir = config.agents_dir / agent_name
+    python = resolve_python(agent_dir)
+
+    if verbose:
+        console.print(f"[dim]Agent dir: {agent_dir}[/dim]")
+        console.print(f"[dim]Python:    {python}[/dim]")
+        console.print(f"[dim]Status:    {agent.status}[/dim]")
+
+    console.print(f"[bold yellow]🐱 Poking {agent_name} awake...[/bold yellow]\n")
+
+    env = build_env(agent_dir, extra={"SOFTCAT_MANUAL_TRIGGER": "1"})
+
+    try:
+        result = subprocess.run(
+            [python, str(agent_dir / "agent.py")],
+            cwd=str(agent_dir),
+            env=env,
+        )
+    except KeyboardInterrupt:
+        console.print(f"\n[yellow]Interrupted. {agent_name} stopped mid-run.[/yellow]")
+        raise SystemExit(130)
+
+    if result.returncode == 0:
+        console.print(f"\n[bold green]🐱 {agent_name} ran successfully[/bold green]")
+    else:
+        console.print(f"\n[bold red]🙀 {agent_name} exited with code {result.returncode}[/bold red]")
+        raise SystemExit(result.returncode)
 
 
 @cli.command()
